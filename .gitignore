@@ -1,3 +1,4 @@
 *.stderr
 *.stdout
 *.o
+./imgdiff/*.o
