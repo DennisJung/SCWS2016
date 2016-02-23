@@ -4,87 +4,6 @@
 #include "imgdiff.h"
 
 
-size_t ARRAY_SIZE = 100;
-
-cl_device_id devices;
-
-int createContext(cl_context *context, cl_device_type dev_type)
-{
-	cl_int err = 0;
-	cl_uint numberOfPlatforms = 0;
-	cl_platform_id firstPlatformID = 0;
-
-	err = clGetPlatformIDs(1, &firstPlatformID, &numberOfPlatforms); //FIXME
-
-	if( err != CL_SUCCESS )
-	{
-		printf("Error: Failed to retrieve clGetPlatformIds\n");
-		return 0;
-	}
-
-	if( numberOfPlatforms <= 0 )
-	{
-		printf(" No OpenCL platforms found.\n");
-		return 0;
-	}
-
-
-	cl_context_properties contextProperties [] = {CL_CONTEXT_PLATFORM, (cl_context_properties)firstPlatformID, 0};
-	*context = clCreateContextFromType(contextProperties, dev_type, NULL, NULL, &err);
-
-	if( err != CL_SUCCESS)
-	{
-		printf("Failed to create context\n");
-		return 0;
-	}
-
-
-	return 1;
-}
-
-
-int getDeviceIDs(cl_context* context, cl_uint* num_devs, cl_device_id* devs, cl_command_queue* cmd_queues)
-{
-	cl_int err = 0;
-	size_t deviceBufferSize = -1;
-	printf("before context info\n");
-
-	err = clGetContextInfo( *context, CL_CONTEXT_DEVICES, 0, NULL, &deviceBufferSize );
-	printf("after context info\n");
-	if( err != CL_SUCCESS )
-	{
-		printf("Failed to get context \n");
-		return 0;
-	}
-
-	if(deviceBufferSize == 0)
-	{
-		printf(" No OpenCL devices found.\n");
-		return 0;
-	}
-
-	*num_devs = deviceBufferSize / sizeof(cl_device_id);
-
-	printf("Devices Count : %d\n", *num_devs);
-
-	devs = (cl_device_id*)malloc(sizeof(cl_device_id)*(*num_devs));
-
-	err = clGetContextInfo( *context, CL_CONTEXT_DEVICES, sizeof(cl_device_id), &devices, NULL );
-
-	if( err != CL_SUCCESS )
-	{
-		printf("Failed to get context\n");
-
-		free(devs);
-		return 0;
-	}
-
-	printf(" after context textinfo\n");
-
-	return 1;
-
-}
-
 int ReadSourceFromFile(const char* fileName, char** source, size_t* sourceSize)
 {
 	int errorCode = CL_SUCCESS;
@@ -115,55 +34,6 @@ int ReadSourceFromFile(const char* fileName, char** source, size_t* sourceSize)
 	return errorCode;
 }
 
-cl_uint CreateAndBuildProgram(cl_context* context, cl_program* program, cl_device_id* devs, cl_uint* num_devs)
-{
-	cl_int err = CL_SUCCESS;
-
-	// Upload the OpenCL C source code from the input file to source
-	// The size of the C program is returned in sourceSize
-	char* source = NULL;
-	size_t src_size = 0;
-	err = ReadSourceFromFile("hello.cl", &source, &src_size);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: ReadSourceFromFile returned %s.\n", err);
-		goto Finish;
-	}
-	printf(" After readsource from file\n");
-	// And now after you obtained a regular C string call clCreateProgramWithSource to create OpenCL program object.
-	*program = clCreateProgramWithSource(*context, 1, (const char**)&source, &src_size, &err);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: clCreateProgramWithSource returned %s.\n", err);
-		goto Finish;
-	}
-
-	printf(" After create program\n");
-	// Build the program
-	// During creation a program is not built. You need to explicitly call build function.
-	// Here you just use create-build sequence,
-	// but there are also other possibilities when program consist of several parts,
-	// some of which are libraries, and you may want to consider using clCompileProgram and clLinkProgram as
-	// alternatives.
-	printf("dev_num %d\n",*num_devs);
-
-	err = clBuildProgram(*program, 1, &devices, "", NULL, NULL);
-
-	if( err != CL_SUCCESS)
-	{
-		printf("Error: clBuildProgram() for source program returned \n");
-	}
-	
-	printf(" After build program\n");
-Finish:
-	if (source)
-	{
-		free(source);
-		source = NULL;
-	}
-
-	return err;
-}
 
 cl_uint CreateBufferArguments(cl_context* context, cl_mem* memObjects, int* a, int *b)
 {
@@ -215,6 +85,9 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	cl_kernel *kernels;
 	cl_uint num_platforms;
 	cl_uint num_devs;
+
+	cl_mem* m_image;
+	cl_mem* m_result;
 
 	int err = CL_SUCCESS;
 
@@ -274,7 +147,7 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 	char* source = NULL;
 	size_t src_size = 0;
-	err = ReadSourceFromFile("./hello.cl", &source, &src_size);
+	err = ReadSourceFromFile("./imgdiff_cal.cl", &source, &src_size);
 	if (CL_SUCCESS != err)
 	{
 		printf("Error: ReadSourceFromFile returned %s.\n", err);
@@ -300,4 +173,28 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	}
 
 	printf("Build Program Success\n");
+
+	kernels = (cl_kernel*)malloc(sizeof(cl_kernel)*num_devs);
+	for(i = 0; i<num_devs; i++)
+	{
+		kernels[i] = clCreateKernel(program, "imgdiff_cal", NULL);
+	}
+
+	printf("Create Kernel Success\n");
+	
+	int WORK_WIDTH = width / 4;
+	int WORK_HEIGHT = height / 4;
+	int WORK_AMOUNT = WORK_WIDTH * WORK_HEIGHT;
+	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\n", WORK_WIDHT, WORK_HEIGHT, WORK_AMOUNT);
+
+	m_image = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
+	m_result = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
+
+	for(i=0; i<num_devs; i++)
+	{
+		m_image = clCreateBuffer(context CL_MEM_READ_ONLY, WORK_AMOUNT * sizeof(unsigned char)*3, NULL, NULL);
+		m_result = clCreateBuffer(context, CL_MEM_WRITE_ONLY, WORK_AMOUNT * sizeof(double), NULL, NULL);
+	}
+
+
 }
