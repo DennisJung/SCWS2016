@@ -1,0 +1,1 @@
+thorq --add --mode single --device gpu --name cl_imgdiff ./imgdiff_opencl image_list_200_200 climg.out
