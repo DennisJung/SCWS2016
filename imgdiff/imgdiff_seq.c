@@ -31,6 +31,7 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	size_t i, j;
 
 	for(i = 0; i < N; ++i) {
+		diff_matrix[i * N + i] = 0;
 		for (j = i + 1; j < N; ++j) {
 			double diff = calc_diff(width, height, images, i, j);
 			diff_matrix[i * N + j] = diff_matrix[j * N + i] = diff;
