@@ -1,5 +1,3 @@
-#include <stdio.h>
-#include <CL/cl.h>
 
 __kernel void hello_kernel(__global const int *a, __global const int *b, __global int *result)
 {
