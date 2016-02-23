@@ -35,43 +35,6 @@ int ReadSourceFromFile(const char* fileName, char** source, size_t* sourceSize)
 }
 
 
-cl_uint CreateBufferArguments(cl_context* context, cl_mem* memObjects, int* a, int *b)
-{
-
-	cl_int err = CL_SUCCESS;
-
-	// Create new OpenCL buffer objects
-	// As these buffer are used only for read by the kernel, you are recommended to create it with flag CL_MEM_READ_ONLY.
-	// Always set minimal read/write flags for buffers, it may lead to better performance because it allows runtime
-	// to better organize data copying.
-	// You use CL_MEM_COPY_HOST_PTR here, because the buffers should be populated with bytes at inputA and inputB.
-
-	memObjects[0] = clCreateBuffer(*context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, sizeof(int) * ARRAY_SIZE, a, &err);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: clCreateBuffer for Lights returned %s\n", err);
-		return err;
-	}
-
-
-	memObjects[1] = clCreateBuffer(*context, CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR, sizeof(int) * ARRAY_SIZE, b, &err);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: clCreateBuffer for Shapes returned %s\n", err);
-		return err;
-	}
-
-	memObjects[2] = clCreateBuffer(*context, CL_MEM_READ_WRITE | CL_MEM_USE_HOST_PTR, sizeof(int) * ARRAY_SIZE, NULL, &err);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: clCreateBuffer for Shapes returned %s\n", err);
-		return err;
-	}
-
-	return CL_SUCCESS;
-}
-
-
 void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigned char* images) 
 {
 
@@ -89,9 +52,13 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	cl_mem* m_image;
 	cl_mem* m_result;
 
+	cl_event* ev_kernels;
+	
 	int err = CL_SUCCESS;
 
 	int i;
+	
+
 
 	// modify version
 	err = clGetPlatformIDs(0, NULL, &num_platforms);
@@ -185,16 +152,78 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	int WORK_WIDTH = width / 4;
 	int WORK_HEIGHT = height / 4;
 	int WORK_AMOUNT = WORK_WIDTH * WORK_HEIGHT;
-	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\n", WORK_WIDHT, WORK_HEIGHT, WORK_AMOUNT);
+	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\n", WORK_WIDTH, WORK_HEIGHT, WORK_AMOUNT);
 
 	m_image = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
 	m_result = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
 
 	for(i=0; i<num_devs; i++)
 	{
-		m_image = clCreateBuffer(context CL_MEM_READ_ONLY, WORK_AMOUNT * sizeof(unsigned char)*3, NULL, NULL);
-		m_result = clCreateBuffer(context, CL_MEM_WRITE_ONLY, WORK_AMOUNT * sizeof(double), NULL, NULL);
+		m_image[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, WORK_AMOUNT * sizeof(unsigned char)*3, NULL, NULL);
+		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, WORK_AMOUNT * sizeof(double), NULL, NULL);
 	}
 
+	printf("Create Buffer Success\n");
+
+	for(i=0; i<num_devs; i++)
+	{
+		clSetKernelArg(kernels[i], 0, sizeof(cl_mem), (void*)&m_image[i]);
+		clSetKernelArg(kernels[i], 1, sizeof(cl_mem), (void*)&m_result[i]);
+
+
+	}	
+
+	printf("Set Kernel Arguments\n");
+
+	size_t gws[2] = { WORK_WIDTH, WORK_HEIGHT };
+	size_t lws[2] = { 256, 256 };
+
+	ev_kernels  = (cl_event*)malloc(sizeof(cl_event)*num_devs);
+
+	cmd_queues = (cl_command_queue*)malloc(sizeof(cl_command_queue)*num_devs);
+	for(i=0; i<num_devs; i++)
+	{
+		cmd_queues[i] = clCreateCommandQueue(context, devs[i], 0, &err);
+		if(err != CL_SUCCESS)
+		{
+			printf("Error: clCreateCommandQueue error\n");
+			return 0;
+		}
+
+	}
+
+
+	for( i=0; i < num_devs; i++ )
+	{
+
+		err = clEnqueueNDRangeKernel(cmd_queues[i], kernels[i], 2, NULL, gws, lws, 0, NULL, &ev_kernels[i]);
+	}
+	/*
+	for( i =0; i < num_devs; i ++ )
+	{
+		clEnqueueReadBuffer( cmd_queues[i], memObjects[i], CL_TRUE, 0, ARRAY_SIZE*sizeof(int), mem_C[i],1,&ev_kernels[i],NULL); 
+	}
+	*/
+
+
+	for( i =0; i < num_devs; i++)
+	{
+		clReleaseMemObject( m_image[i] );
+		clReleaseMemObject( m_result[i] );
+		clReleaseKernel(kernels[i]);
+		clReleaseCommandQueue(cmd_queues[i]);
+		clReleaseEvent(ev_kernels[i]);
+	}
+	
+	clReleaseProgram(program);
+	clReleaseContext(context);
+	free(platform);
+	free(m_image);
+	free(m_result);
+	free(cmd_queues);
+	free(kernels);
+	free(devs);
+	free(ev_kernels);
+	printf("OpenCL End\n");
 
 }
