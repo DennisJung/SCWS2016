@@ -58,8 +58,6 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 	int i;
 	
-
-
 	// modify version
 	err = clGetPlatformIDs(0, NULL, &num_platforms);
 	if(err != CL_SUCCESS)
@@ -147,38 +145,8 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 		kernels[i] = clCreateKernel(program, "imgdiff_cal", NULL);
 	}
 
+
 	printf("Create Kernel Success\n");
-	
-	int WORK_WIDTH = width / 4;
-	int WORK_HEIGHT = height / 4;
-	int WORK_AMOUNT = WORK_WIDTH * WORK_HEIGHT;
-	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\n", WORK_WIDTH, WORK_HEIGHT, WORK_AMOUNT);
-
-	m_image = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
-	m_result = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
-
-	for(i=0; i<num_devs; i++)
-	{
-		m_image[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, WORK_AMOUNT * sizeof(unsigned char)*3, NULL, NULL);
-		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, WORK_AMOUNT * sizeof(double), NULL, NULL);
-	}
-
-	printf("Create Buffer Success\n");
-
-	for(i=0; i<num_devs; i++)
-	{
-		clSetKernelArg(kernels[i], 0, sizeof(cl_mem), (void*)&m_image[i]);
-		clSetKernelArg(kernels[i], 1, sizeof(cl_mem), (void*)&m_result[i]);
-
-
-	}	
-
-	printf("Set Kernel Arguments\n");
-
-	size_t gws[2] = { WORK_WIDTH, WORK_HEIGHT };
-	size_t lws[2] = { 256, 256 };
-
-	ev_kernels  = (cl_event*)malloc(sizeof(cl_event)*num_devs);
 
 	cmd_queues = (cl_command_queue*)malloc(sizeof(cl_command_queue)*num_devs);
 	for(i=0; i<num_devs; i++)
@@ -192,20 +160,72 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 	}
 
+	printf("Create commandQueue Success\n");
+
+	int WORK_WIDTH = width;
+	int WORK_HEIGHT = height;
+	int WORK_AMOUNT = WORK_WIDTH * WORK_HEIGHT;
+	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\n", WORK_WIDTH, WORK_HEIGHT, WORK_AMOUNT);
+	
+	m_image = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
+	m_result = (cl_mem*)malloc(sizeof(cl_mem)* num_devs);
+
+
+	for(i=0; i<num_devs; i++)
+	{
+		m_image[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, WORK_AMOUNT * sizeof(unsigned char)*3, NULL, NULL);
+		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(double), NULL, NULL);
+	}
+
+	printf("Create Buffer Success\n");
+
+	for(i=0; i<num_devs; i++)
+	{		
+		clSetKernelArg(kernels[i], 0, sizeof(cl_mem), (void*)&m_image[i]);
+		clSetKernelArg(kernels[i], 1, sizeof(cl_mem), (void*)&m_result[i]);
+	}
+
+	printf("Set Kernel Arguments\n");
+	/*
+	int row, col;
+	for(row = 0; row < N; row++)
+	{
+		for(col=0; col<)
+	*/	
+	size_t gws[2] = { WORK_WIDTH, WORK_HEIGHT };
+	
+	size_t lws[2] = { 256, 256 };
+
+	ev_kernels  = (cl_event*)malloc(sizeof(cl_event)*num_devs);
+	
+	for(i=0; i<num_devs; i++)
+	{
+
+		clEnqueueWriteBuffer(cmd_queues[i], m_image[i], CL_FALSE, 0, WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + i * WORK_AMOUNT), 0, NULL, NULL);
+
+	}
+
+	printf("Write Buffer Success\n");
 
 	for( i=0; i < num_devs; i++ )
 	{
 
-		err = clEnqueueNDRangeKernel(cmd_queues[i], kernels[i], 2, NULL, gws, lws, 0, NULL, &ev_kernels[i]);
+		err = clEnqueueNDRangeKernel(cmd_queues[i], kernels[i], 2, NULL, gws, lws, 0, NULL, NULL);
 	}
-	/*
-	for( i =0; i < num_devs; i ++ )
+
+
+	diff_matrix[0] = 0;	
+	for( i =0; i < num_devs; i++ )
 	{
-		clEnqueueReadBuffer( cmd_queues[i], memObjects[i], CL_TRUE, 0, ARRAY_SIZE*sizeof(int), mem_C[i],1,&ev_kernels[i],NULL); 
+		clEnqueueReadBuffer( cmd_queues[i], m_result[i], CL_TRUE, 0, sizeof(double), diff_matrix + i, 0, NULL, NULL); 
 	}
-	*/
+	
+	printf("%lf %lf %lf %lf\n", diff_matrix[0], diff_matrix[1], diff_matrix[2], diff_matrix[3]);
+	diff_matrix[0] = 2;
 
-
+	diff_matrix[1] = 2;
+	
+	diff_matrix[2] = 2;
 	for( i =0; i < num_devs; i++)
 	{
 		clReleaseMemObject( m_image[i] );
