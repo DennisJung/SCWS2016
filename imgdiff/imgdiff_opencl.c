@@ -4,7 +4,7 @@
 #include "imgdiff.h"
 
 
-size_t ARRAY_SIZE = 100;
+int ARRAY_SIZE = 100;
 
 cl_device_id devices;
 
@@ -215,10 +215,14 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	cl_kernel *kernels;
 	cl_uint num_platforms;
 	cl_uint num_devs;
-
+	cl_event* ev_kernels;
 	int err = CL_SUCCESS;
 
 	int i;
+	
+	int *
+
+
 
 	// modify version
 	err = clGetPlatformIDs(0, NULL, &num_platforms);
@@ -300,4 +304,46 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	}
 
 	printf("Build Program Success\n");
+
+	size_t gws[2] = { 100, 100 };
+	size_t lws[2] = { 10,10 };
+
+	ev_kernels  = (cl_event*)malloc(sizeof(cl_event)*num_devs);
+
+	for( i=0; i < num_devs; i++ )
+	{
+
+		err = clEnqueueNDRangeKernel(cmd_queues[i], kernels[i], 2, NULL, gws, lws, 0, NULL, &ev_kernels[i]);
+
+	}
+
+
+	for( i =0; i < num_devs; i ++ )
+	{
+		clEnqueueReadBuffer( cmd_queues[i], memObjects[i], CL_TRUE, 0, ARRAY_SIZE*sizeof(int), mem_C[i],1,&ev_kernels[i],NULL); 
+	}
+
+
+
+	for( i =0; i < num_devs; i++)
+	{
+		clReleaseMemObject( mem_A[i] );
+		clReleaseMemObject( mem_A[i] );
+		clReleaseMemObject( mem_A[i] );
+		clReleaseKernel(kernels[i]);
+		clReleaseCommandQueue(kernels[i]);
+		clReleaseEvent(ev_kernels[i]);
+	}
+	
+	clReleaseProgram(program);
+	clReleaseContext(context);
+	free(platform);
+	free(mem_A);free(mem_B);free(mem_C);
+	free(cmd_queues);
+	free(kernels);
+	free(devs);
+	free(ev_kernels);
+
+
+
 }
