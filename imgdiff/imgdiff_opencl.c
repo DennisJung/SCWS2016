@@ -16,6 +16,163 @@ struct timeval end_m;
 #endif
 
 
+// Translate OpenCL Error
+static const char* TranslateOpenCLError(cl_int errorCode);
+// TODO : Stucture for labeling user data
+typedef struct {
+	cl_device_id dev;
+	cl_event* event;
+} bp_data_t;
+
+// TODO : Load or Save binary file
+char* load_binary(const char* file_name, size_t * length)
+{
+	FILE *file = fopen(file_name, "r");
+	if (file == NULL) {
+		fprintf(stderr, "[%s:%d] ERROR: Failed to open %s\n",
+				__FILE__, __LINE__, file_name);
+		return NULL;
+	}
+
+	fseek(file, 0, SEEK_END);
+	*length = (size_t)ftell(file);
+	rewind(file);
+
+	char *binary_code = (char *)malloc(*length + 1);
+	if (fread(binary_code, *length, 1, file) != 1) {
+		fclose(file);
+		free(binary_code);
+
+		fprintf(stderr, "[%s:%d] ERROR: Failed to read %s\n",
+				__FILE__, __LINE__, file_name);
+		return NULL;
+	}
+	fclose(file);
+
+	binary_code[*length] = '\0';
+	return binary_code;
+}
+
+
+
+void save_binary(const char* file_name,	cl_program program, cl_uint num_devs)
+{
+	int i;
+	cl_int err;
+	size_t* binary_size = (size_t*)malloc(sizeof(size_t)*num_devs);
+	printf("before get binarysize\n");
+	err = clGetProgramInfo(program,
+			CL_PROGRAM_BINARY_SIZES,
+			sizeof(size_t)*num_devs,
+			binary_size,
+			NULL);
+	printf("%s\n",	TranslateOpenCLError(err));
+
+	printf("after get binarysize\n");
+
+	unsigned char **kernel_binary = (unsigned char **)malloc(sizeof(unsigned char*)*num_devs);
+	for( i = 0; i  < num_devs; i++)
+	{
+		kernel_binary[i] = (unsigned char*)malloc(sizeof(unsigned char)*(binary_size[i]));
+
+	}
+
+	printf("after malloc of kernel_binary\n");
+
+	err = clGetProgramInfo(program,
+			CL_PROGRAM_BINARIES,
+			sizeof(unsigned char *)*num_devs,
+			kernel_binary,
+			NULL);
+	printf("%s\n",TranslateOpenCLError(err));
+
+	printf("after get program info\n");
+
+
+	FILE *file = fopen(file_name, "w");
+	if (file == NULL) {
+		fprintf(stderr, "[%s:%d] ERROR: Failed to open %s\n",
+				__FILE__, __LINE__, file_name);
+		exit(EXIT_FAILURE);
+	}
+
+	fseek(file, 0, SEEK_END);
+	printf("before write kernel\n");
+	for( i = 0; i < num_devs; i ++ )
+	{
+		if (fwrite(kernel_binary[i], binary_size[i],1, file) != 1) {
+			fclose(file);
+			free(kernel_binary);
+
+			fprintf(stderr, "[%s:%d] ERROR: Failed to write %s\n",
+					__FILE__, __LINE__, file_name);
+			exit(EXIT_FAILURE);
+		}
+
+	}
+	printf("after write kernel\n");
+
+
+	fclose(file);
+
+	free(kernel_binary);
+	free(binary_size);
+}
+
+
+//TODO : Unblock clBuildProgram
+static void build_program_callback(cl_program program, void *user_data) {
+	cl_int err;
+	cl_build_status build_status;
+	bp_data_t *bp_data = (bp_data_t *)user_data;
+
+	// Check the build status.
+	err = clGetProgramBuildInfo(program, bp_data->dev,
+			CL_PROGRAM_BUILD_STATUS,
+			sizeof(cl_build_status),
+			&build_status, NULL);
+	printf("%s\n",TranslateOpenCLError(err));
+	if (build_status != CL_BUILD_SUCCESS) {
+		exit(EXIT_FAILURE);
+	}
+
+	// Set the event status
+	err = clSetUserEventStatus(*(bp_data->event), CL_COMPLETE);
+
+	printf("%s\n",TranslateOpenCLError(err));
+
+	/*
+	   cl_int* err;
+	   err = (cl_int*)malloc(sizeof(cl_int)*1);
+	   cl_build_status build_status;
+	   bp_data_t *bp_data = (bp_data_t *)user_data;
+	   int i;
+	// Check the build status.
+	for( i = 0; i < 1; i++ )
+	{
+	err[i] = clGetProgramBuildInfo(program, bp_data->dev[i],
+	CL_PROGRAM_BUILD_STATUS,
+	sizeof(cl_build_status),
+	&build_status, NULL);
+	printf("%s\n",TranslateOpenCLError(err[i]));
+
+	if (build_status != CL_BUILD_SUCCESS) {
+	//	print_build_log(program, bp_data->dev);
+	exit(EXIT_FAILURE);
+	}
+
+	// Set the event status
+
+	err[i] = clSetUserEventStatus(*(bp_data->event), CL_COMPLETE);
+	printf("%s\n",TranslateOpenCLError(err[i]));
+	}
+
+	free(err);
+	*/
+}
+
+
+//TODO : Translate OpenCLerror 
 static const char* TranslateOpenCLError(cl_int errorCode)
 {
 	switch (errorCode)
@@ -141,11 +298,14 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	cl_mem* m_result;
 
 	cl_event* ev_kernels;
+	cl_event ev_bp;	
 
 	int err = CL_SUCCESS;
+	// binary index
+	int use_binary = 1;
 
 	int i, j;
-	
+
 	// modify version
 	err = clGetPlatformIDs(0, NULL, &num_platforms);
 	if(err != CL_SUCCESS)
@@ -198,25 +358,63 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 	printf("Context Create\n");
 
-	char* source = NULL;
-	size_t src_size = 0;
-	err = ReadSourceFromFile("./imgdiff_cal.cl", &source, &src_size);
-	if (CL_SUCCESS != err)
-	{
-		printf("Error: ReadSourceFromFile returned %s.\n", err);
+
+	//TODO : Create a program.
+
+	size_t *bin_len = (size_t*)malloc(sizeof(size_t)*num_devs);
+	char ** bin_code = (char**)malloc(sizeof(char*)*num_devs);
+
+	for( i = 0; i < num_devs; i ++ )
+		bin_code[i] = load_binary("./imgdiff_cal.bin", &bin_len[i]);
+
+	printf("after bin_code\n");
+
+//	*(bin_code) = NULL;
+
+	cl_int binary_status;
+	if((*bin_code) != NULL) { // If binary already created
+		use_binary = 1;
+		program = clCreateProgramWithBinary(context,
+				num_devs, devs, bin_len, bin_code,
+				&binary_status, &err);
+		free(bin_code);
+		printf("%s\n",TranslateOpenCLError(binary_status));
+		printf("%s\n",TranslateOpenCLError(err));
+
+		printf("use binary!!\n");
+	}
+	else{
+
+		char* source = NULL;
+		size_t src_size = 0;
+		err = ReadSourceFromFile("./imgdiff_cal.cl", &source, &src_size);
+		if (CL_SUCCESS != err)
+		{
+			printf("Error: ReadSourceFromFile returned %s.\n", err);
+			free(source);
+			return 0;
+		}
+
+		program = clCreateProgramWithSource(context, 1, (const char**)&source, &src_size, &err);
+		if(err != CL_SUCCESS)
+		{
+			printf("Error: clCreateProgram error\n");
+			return 0;
+		}
+
 		free(source);
-		return 0;
 	}
-
-	program = clCreateProgramWithSource(context, 1, (const char**)&source, &src_size, &err);
-	if(err != CL_SUCCESS)
-	{
-		printf("Error: clCreateProgram error\n");
-		return 0;
-	}
-
-	free(source);
 	printf("Create Program Success\n");
+	//TODO : Callback data for clBuildProgram
+
+	ev_bp = clCreateUserEvent(context, &err);
+	printf("%s\n",TranslateOpenCLError(err));
+	bp_data_t bp_data; 
+	//	bp_data.dev    = ( cl_device_id*)malloc(sizeof(cl_device_id)*num_devs);
+	//	for( i = 0; i < num_devs; i ++ )
+	//		bp_data.dev[i] = devs[i];
+	bp_data.dev = devs[0];
+	bp_data.event  = &ev_bp;
 
 #if DBG
 	// Measure clBuildProgram -@henry added
@@ -236,6 +434,12 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	}
 
 	printf("Build Program Success\n");
+	// TODO: Wait for kernel created event.
+	//	clWaitForEvents(1, bp_data.event);
+
+	// Save kernel binary
+//	if(use_binary == 0)
+//		save_binary("imgdiff_cal.bin", program, num_devs);
 
 	kernels = (cl_kernel*)malloc(sizeof(cl_kernel)*num_devs);
 	for(i = 0; i<num_devs; i++)
@@ -267,7 +471,7 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	int WORK_HEIGHT = ceil((double)height/LOCAL_HEIGHT) * LOCAL_HEIGHT;
 	int WORK_AMOUNT = width * height;
 	int WORK_GROUP_COUNT = ceil(((double)WORK_WIDTH * WORK_HEIGHT) / (LOCAL_WIDTH * LOCAL_HEIGHT));
-	
+
 	int WORK_GROUP_WIDTH = width;
 	int WORK_GROUP_HEIGHT = height;
 
@@ -285,7 +489,7 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	{
 		m_image1[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT*3, NULL, NULL);
 		m_image2[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT*3, NULL, NULL);
-			
+
 		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(double) * WORK_GROUP_COUNT, NULL, NULL);
 	}
 
@@ -307,13 +511,15 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 
 
-	int row, col;
-
+	int row, col, nI;
+	size_t TOTAL_NUM = ceil(N * (N - 1) / 2 / (128*4)) * 4;
+	printf("TOTAL_NUM : %d\n", TOTAL_NUM);
 	row = 0;
 	col = 1;
 	
-	//for(row = 0; row < N; row++)
-	//{
+	for(nI = 0; nI<TOTAL_NUM; nI++)
+	{
+
 		diff_matrix[row*N + row] = 0;
 		//for(col=row+1; col< N; col++)
 		//{
@@ -330,8 +536,8 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 			
 				clEnqueueWriteBuffer(cmd_queues[i], m_image2[i], CL_FALSE, 0, 
-					WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + 
-					((col * width*height) + (WORK_AMOUNT * i))*3), 0, NULL, NULL);
+						WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + 
+							((col * width*height) + (WORK_AMOUNT * i))*3), 0, NULL, NULL);
 
 
 			}
@@ -361,50 +567,49 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 					printf("Error: clEnqueueReadBuffer%d error\n", i);
 					return 0;
 				}
-				
-						
 				for(j = 0; j<WORK_GROUP_COUNT; j++)
 				{
 					tmp += tmp_result_data[j];
 					//printf("%lf\t", tmp_result_data[j]);
-					
+
 				}
 				
 				//printf("\n%lf %lf %lf\n",tmp, tmp_result_data[0], tmp_result_data[WORK_GROUP_COUNT - 1]);
 				
 				diff_matrix[row*N+col] = diff_matrix[col*N+row] = tmp_sum;
-				printf("%lf\t", tmp);
+				//printf("%lf\t", tmp);
+
 			}
 
 		//}
-	//}
+	}
 
 	//printf("%lf %lf %lf %lf\n", diff_matrix[0], diff_matrix[1], diff_matrix[2], diff_matrix[3]);
 	//}
 	//}
-	/*
-	   for( i =0; i < num_devs; i++)
-	   {
-	   printf("test%d\n", i);
-	   clReleaseMemObject( m_image1[i] );	
-	   clReleaseMemObject( m_image2[i] );
-	   clReleaseMemObject( m_result[i] );
-	   clReleaseKernel(kernels[i]);
-	   clReleaseCommandQueue(cmd_queues[i]);
-	   clReleaseEvent(ev_kernels[i]);
-	   }
+/*
+   for( i =0; i < num_devs; i++)
+   {
+   printf("test%d\n", i);
+   clReleaseMemObject( m_image1[i] );	
+   clReleaseMemObject( m_image2[i] );
+   clReleaseMemObject( m_result[i] );
+   clReleaseKernel(kernels[i]);
+   clReleaseCommandQueue(cmd_queues[i]);
+   clReleaseEvent(ev_kernels[i]);
+   }
 
-	   clReleaseProgram(program);
-	   clReleaseContext(context);
-	   free(platform);
-	   free(m_image1);
-	   free(m_image2);
-	   free(m_result);
-	   free(cmd_queues);
-	   free(kernels);
-	   free(devs);
-	   free(ev_kernels);
-	   */
-	printf("OpenCL End\n");
+   clReleaseProgram(program);
+   clReleaseContext(context);
+   free(platform);
+   free(m_image1);
+   free(m_image2);
+   free(m_result);
+   free(cmd_queues);
+   free(kernels);
+   free(devs);
+   free(ev_kernels);
+   */
+printf("OpenCL End\n");
 
 }
