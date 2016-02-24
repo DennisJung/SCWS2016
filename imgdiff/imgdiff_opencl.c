@@ -131,7 +131,7 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	
 	int err = CL_SUCCESS;
 
-	int i;
+	int i, j;
 	
 	// modify version
 	err = clGetPlatformIDs(0, NULL, &num_platforms);
@@ -238,10 +238,18 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	printf("Create commandQueue Success\n");
 	int LOCAL_WIDTH = 16;
 	int LOCAL_HEIGHT = 16;
+
+
 	int WORK_WIDTH = ceil((double)width / LOCAL_WIDTH)*LOCAL_WIDTH;
 	int WORK_HEIGHT = ceil((double)height/LOCAL_HEIGHT) * LOCAL_HEIGHT / 4;
 	int WORK_AMOUNT = width * height / 4;
-	int WORK_GROUP_COUNT = WORK_WIDTH * WORK_HEIGHT / (LOCAL_WIDTH * LOCAL_HEIGHT);
+	int WORK_GROUP_COUNT = ceil(((double)WORK_WIDTH * WORK_HEIGHT) / (LOCAL_WIDTH * LOCAL_HEIGHT));
+	
+	int WORK_GROUP_WIDTH = width;
+	int WORK_GROUP_HEIGHT = height / 4;
+
+	double tmp_result_data[WORK_GROUP_COUNT];
+
 	printf("WORK_WIDTH %d\tWORK_HEIGHT %d\t WORK_AMOUNT %d\t WORK_GROUP_COUNT %d\n", 
 		WORK_WIDTH, WORK_HEIGHT, WORK_AMOUNT, WORK_GROUP_COUNT);
 	
@@ -252,10 +260,10 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 
 	for(i=0; i<num_devs; i++)
 	{
-		m_image1[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT, NULL, NULL);
-		m_image2[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT, NULL, NULL);
-		
-		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(double) * WORK_AMOUNT, NULL, NULL);
+		m_image1[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT*3, NULL, NULL);
+		m_image2[i] = clCreateBuffer(context, CL_MEM_READ_ONLY, sizeof(unsigned char) * WORK_AMOUNT*3, NULL, NULL);
+			
+		m_result[i] = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(double) * WORK_GROUP_COUNT, NULL, NULL);
 	}
 
 	printf("Create Buffer Success\n");
@@ -265,6 +273,9 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 		clSetKernelArg(kernels[i], 0, sizeof(cl_mem), (void*)&m_image1[i]);
 		clSetKernelArg(kernels[i], 1, sizeof(cl_mem), (void*)&m_image2[i]);
 		clSetKernelArg(kernels[i], 2, sizeof(cl_mem), (void*)&m_result[i]);
+		clSetKernelArg(kernels[i], 3, sizeof(cl_double) * LOCAL_WIDTH * LOCAL_HEIGHT, NULL);
+		clSetKernelArg(kernels[i], 4, sizeof(cl_int), &WORK_GROUP_WIDTH);
+		clSetKernelArg(kernels[i], 5, sizeof(cl_int), &WORK_GROUP_HEIGHT);
 	}
 
 	printf("Set Kernel Arguments\n");
@@ -277,38 +288,35 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 	
 	row = 0;
 	col = 1;
-	//for(row = 0; row < N; row++)
-	//{
+	
+	for(row = 0; row < N; row++)
+	{
 		diff_matrix[row*N + row] = 0;
-		for(i=0; i<num_devs; i++)
+		for(col=row+1; col< N; col++)
 		{
-
-			clEnqueueWriteBuffer(cmd_queues[i], m_image1[i], CL_TRUE, 0, 
-				WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + 
-				((row * width*height) + (WORK_AMOUNT * i))), 0, NULL, NULL);
-
-		}
-		//for(col=row+1; col< N; col++)
-		//{
 
 
 			size_t gws[2] = { WORK_WIDTH, WORK_HEIGHT};
 
-			size_t lws[2] = { 16, 16 };
+			size_t lws[2] = { LOCAL_WIDTH, LOCAL_HEIGHT };
 
-
+			
 			for(i=0; i<num_devs; i++)
 			{
-
-				clEnqueueWriteBuffer(cmd_queues[i], m_image2[i], CL_TRUE, 0, 
+				
+				clEnqueueWriteBuffer(cmd_queues[i], m_image1[i], CL_FALSE, 0, 
 					WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + 
-					((col * width*height) + (WORK_AMOUNT * i))), 0, NULL, NULL);
+					((row * width*height) + (WORK_AMOUNT * i))*3), 0, NULL, NULL);
+
+				clEnqueueWriteBuffer(cmd_queues[i], m_image2[i], CL_FALSE, 0, 
+					WORK_AMOUNT*sizeof(unsigned char)*3, (void*)(images + 
+					((col * width*height) + (WORK_AMOUNT * i))*3), 0, NULL, NULL);
 
 
 			}
-
+			//printf("%d %d %d\n",(int)images[0], (int)images[(col*width*height)*3 + (WORK_AMOUNT*i)], ((col*width*height)+(WORK_AMOUNT*i))*3);
 			//printf("Write Buffer Success\n");
-
+			
 			for( i=0; i < num_devs; i++ )
 			{
 
@@ -321,20 +329,33 @@ void imgdiff(size_t N, size_t width, size_t height, double* diff_matrix, unsigne
 				}
 			}
 
-			
+			double tmp_sum = 0;
+			i = 0;
 			for( i =0; i < num_devs; i++ )
 			{
-				err = clEnqueueReadBuffer( cmd_queues[i], m_result[i], CL_TRUE, 0, sizeof(double), diff_matrix + i, 0, NULL, NULL); 
+				//double tmp = 0;
+				err = clEnqueueReadBuffer( cmd_queues[i], m_result[i], CL_TRUE, 0, sizeof(double) * WORK_GROUP_COUNT, tmp_result_data, 0, NULL, NULL); 
 				if(err != CL_SUCCESS)
 				{
 					printf("Error: clEnqueueReadBuffer%d error\n", i);
 					return 0;
 				}
+				
+					
+				for(j = 0; j<WORK_GROUP_COUNT; j++)
+				{
+					tmp_sum += tmp_result_data[j];
+					//printf("%lf\t", tmp_result_data[j]);
+					
+				}
+				//printf("\n%lf %lf %lf\n",tmp, tmp_result_data[0], tmp_result_data[WORK_GROUP_COUNT - 1]);
+				
 			}
+			diff_matrix[row*N+col] = diff_matrix[col*N+row] = tmp_sum;
 
-			//printf("%lf %lf %lf %lf\n", diff_matrix[0], diff_matrix[1], diff_matrix[2], diff_matrix[3]);
-		//}
-	//}
+			//printf("%lf\t", tmp_sum);
+		}
+	}
 	/*
 	for( i =0; i < num_devs; i++)
 	{
